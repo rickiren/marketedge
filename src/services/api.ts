@@ -101,6 +101,9 @@ async function fetchSupabaseRPCWithRetry<T>(
   return null;
 }
 
+/**
+ * Fetches coin data from CryptoCompare API
+ */
 export const fetchCoinData = async (): Promise<CoinData[]> => {
   try {
     const symbols = COIN_PAIRS.map(pair => pair.split('/')[0]);
@@ -111,8 +114,6 @@ export const fetchCoinData = async (): Promise<CoinData[]> => {
       fsyms,
       tsyms: 'USD'
     }).toString();
-    
-    console.log('Fetching coin data from:', url.toString());
     
     const response = await fetchWithRetry(url.toString(), {
       headers: {
@@ -130,8 +131,6 @@ export const fetchCoinData = async (): Promise<CoinData[]> => {
     if (!data.RAW) {
       throw new Error('Invalid API response structure: missing RAW data');
     }
-
-    console.log('Processing coin data...');
 
     const coins = await Promise.all(symbols.map(async (symbol) => {
       try {
@@ -166,7 +165,6 @@ export const fetchCoinData = async (): Promise<CoinData[]> => {
     }));
 
     const validCoins = coins.filter((coin): coin is CoinData => coin !== null);
-    console.log(`Successfully processed ${validCoins.length} coins`);
 
     const processedCoins = await Promise.all(
       validCoins.map(async (coin) => {
@@ -205,22 +203,15 @@ export const fetchCoinData = async (): Promise<CoinData[]> => {
             }
           ) ?? 0;
 
-          console.log(`${coin.symbol} metrics:`, {
-            priceChange,
-            relativeVolume,
-            spikeFactor
-          });
-
           // Only insert alert if both volume and price conditions are met
           if (relativeVolume >= 5 && spikeFactor >= 1.5 && priceChange >= 5) {
             await insertRunningUpAlert(coin);
-            console.log(`Alert inserted for ${coin.symbol}`);
           }
 
           return {
             ...coin,
             price_change_5m: priceChange,
-            volume_ratio: relativeVolume, // Use relativeVolume as volume_ratio
+            volume_ratio: 1,
             relative_volume: relativeVolume,
             spike_factor: spikeFactor
           };
@@ -261,16 +252,17 @@ function isValidCoinData(coin: CoinData): boolean {
   );
 }
 
+/**
+ * Fetches historical hourly data for a given symbol
+ */
 export const fetchHistoricalData = async (symbol: string): Promise<HistoricalDataPoint[]> => {
   try {
-    const url = new URL(`${BASE_URL}/data/v2/histominute`);
+    const url = new URL(`${BASE_URL}/data/v2/histohour`);
     url.search = new URLSearchParams({
       fsym: symbol,
       tsym: 'USD',
-      limit: '5', // Last 5 minutes for price change calculation
+      limit: '12', // Last 12 hours for SMA calculation
     }).toString();
-
-    console.log(`Fetching historical data for ${symbol}:`, url.toString());
 
     const response = await fetchWithRetry(url.toString(), {
       headers: {
@@ -291,7 +283,6 @@ export const fetchHistoricalData = async (symbol: string): Promise<HistoricalDat
       return [];
     }
 
-    console.log(`Retrieved ${data.Data.Data.length} historical data points for ${symbol}`);
     return data.Data.Data;
   } catch (error) {
     console.error(`Error fetching historical data for ${symbol}:`, error);

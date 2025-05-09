@@ -10,10 +10,6 @@ interface DayHighData {
   initialPrice: number;
 }
 
-// Cache for storing API responses
-const responseCache = new Map<string, { data: CoinData[]; timestamp: number }>();
-const CACHE_DURATION = 30000; // 30 seconds cache duration
-
 export const useCryptoData = (): ApiResponse => {
   const [state, setState] = useState<ApiResponse>({
     isLoading: true,
@@ -26,26 +22,10 @@ export const useCryptoData = (): ApiResponse => {
   const lastAlertRef = useRef<Map<string, number>>(new Map());
   const fetchTimeoutRef = useRef<NodeJS.Timeout>();
   const isSubscribedRef = useRef(false);
-  const isInitialLoadRef = useRef(true);
   
   const dayStartRef = useRef<number>(
     new Date(new Date().toISOString().split('T')[0]).getTime()
   );
-
-  const getCachedData = (): CoinData[] | null => {
-    const cached = responseCache.get('coinData');
-    if (cached && Date.now() - cached.timestamp < CACHE_DURATION) {
-      return cached.data;
-    }
-    return null;
-  };
-
-  const setCachedData = (data: CoinData[]) => {
-    responseCache.set('coinData', {
-      data,
-      timestamp: Date.now()
-    });
-  };
   
   const loadDailyHighs = async () => {
     try {
@@ -156,6 +136,7 @@ export const useCryptoData = (): ApiResponse => {
       let initialPrice = coin.current_price;
       
       if (!dayHighData || isNewUtcDay) {
+        // Initialize new day data
         dayHighsRef.current.set(coin.symbol, {
           high_of_day: coin.current_price,
           timestamp: now,
@@ -171,17 +152,19 @@ export const useCryptoData = (): ApiResponse => {
       } else {
         initialPrice = dayHighData.initialPrice;
         
-        // Only check for new highs if not in initial load
-        if (!isInitialLoadRef.current && coin.current_price > dayHighData.high_of_day) {
+        // Check if current price is a new high
+        if (coin.current_price > dayHighData.high_of_day) {
           high_of_day = coin.current_price;
           const priceIncrease = ((coin.current_price - initialPrice) / initialPrice) * 100;
           
+          // Alert if price increase is significant and enough time has passed
           if (priceIncrease >= 2 && now - lastAlert >= minAlertInterval) {
             is_new_high = true;
             lastAlertRef.current.set(coin.symbol, now);
             await updateLastAlert(coin.symbol, now);
           }
           
+          // Update daily high
           dayHighsRef.current.set(coin.symbol, {
             high_of_day: coin.current_price,
             timestamp: now,
@@ -223,29 +206,7 @@ export const useCryptoData = (): ApiResponse => {
 
   const fetchData = async () => {
     try {
-      // Check cache first
-      const cachedData = getCachedData();
-      if (cachedData) {
-        const dataWithMomentum = await calculateMomentumMetrics(
-          cachedData,
-          previousDataRef.current
-        );
-        
-        previousDataRef.current = cachedData;
-        
-        setState({
-          isLoading: false,
-          error: null,
-          data: dataWithMomentum
-        });
-        
-        // Schedule next update
-        fetchTimeoutRef.current = setTimeout(fetchData, REFRESH_INTERVAL);
-        return;
-      }
-
       const newData = await fetchCoinData();
-      setCachedData(newData);
       
       const dataWithMomentum = await calculateMomentumMetrics(
         newData,
@@ -259,9 +220,6 @@ export const useCryptoData = (): ApiResponse => {
         error: null,
         data: dataWithMomentum
       });
-
-      // After successful data load, set initial load to false
-      isInitialLoadRef.current = false;
 
       // Schedule next update
       fetchTimeoutRef.current = setTimeout(fetchData, REFRESH_INTERVAL);
@@ -282,7 +240,7 @@ export const useCryptoData = (): ApiResponse => {
     if (isSubscribedRef.current) return;
 
     const subscription = supabase
-      .channel('running-up-alerts')
+      .channel('running_up_alerts')
       .on('postgres_changes', {
         event: 'INSERT',
         schema: 'public',
