@@ -41,43 +41,17 @@ const MomentumScanner: React.FC<MomentumScannerProps> = ({ data, onSymbolClick }
   const [isBacktesting, setIsBacktesting] = useState(false);
   const [backtestProgress, setBacktestProgress] = useState(0);
   const { isMuted, playSound, toggleMute } = useSound();
-  const [debugMode, setDebugMode] = useState(false);
 
   // Update alerts when new data comes in
   useEffect(() => {
-    if (!data || data.length === 0) return;
-
-    console.log('Processing new data for momentum alerts...');
-
     const newAlerts = data
-      .filter(coin => {
-        // Log conditions for debugging
-        if (debugMode) {
-          console.log(`${coin.symbol} conditions:`, {
-            price_change_5m: coin.price_change_5m,
-            volume_ratio: coin.volume_ratio,
-            is_new_high: coin.is_new_high,
-            relative_volume: coin.relative_volume,
-            spike_factor: coin.spike_factor
-          });
-        }
-
-        // Check for momentum conditions (5% price increase and 2x volume)
-        const hasMomentum = coin.price_change_5m && 
-                           coin.volume_ratio && 
-                           coin.price_change_5m >= 5 && 
-                           coin.volume_ratio >= 2;
-
-        // Check for volume spike conditions
-        const hasVolumeSpike = coin.relative_volume && 
-                              coin.spike_factor && 
-                              coin.price_change_5m &&
-                              coin.relative_volume >= 5 && 
-                              coin.spike_factor >= 1.5 && 
-                              coin.price_change_5m >= 5;
-
-        return hasMomentum || coin.is_new_high || hasVolumeSpike;
-      })
+      .filter(coin => 
+        (coin.price_change_5m && coin.volume_ratio && 
+         coin.price_change_5m >= 5 && coin.volume_ratio >= 2) ||
+        coin.is_new_high ||
+        (coin.relative_volume && coin.spike_factor && coin.price_change_5m &&
+         coin.relative_volume >= 5 && coin.spike_factor >= 1.5 && coin.price_change_5m >= 5)
+      )
       .map(coin => ({
         id: `${coin.symbol}-${Date.now()}`,
         symbol: coin.symbol,
@@ -92,10 +66,6 @@ const MomentumScanner: React.FC<MomentumScannerProps> = ({ data, onSymbolClick }
         spike_factor: coin.spike_factor
       }));
 
-    if (debugMode && newAlerts.length > 0) {
-      console.log('New alerts generated:', newAlerts);
-    }
-
     // Add new alerts that aren't already in the list
     setAlerts(prevAlerts => {
       const newUniqueAlerts = newAlerts.filter(newAlert => 
@@ -105,8 +75,8 @@ const MomentumScanner: React.FC<MomentumScannerProps> = ({ data, onSymbolClick }
         )
       );
       
+      // Play sound if there are new alerts
       if (newUniqueAlerts.length > 0) {
-        console.log('Adding new unique alerts:', newUniqueAlerts);
         playSound();
       }
       
@@ -115,7 +85,7 @@ const MomentumScanner: React.FC<MomentumScannerProps> = ({ data, onSymbolClick }
         .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())
         .slice(0, 100); // Keep last 100 alerts
     });
-  }, [data, playSound, debugMode]);
+  }, [data, playSound]);
 
   // Clean up old alerts (older than 24 hours)
   useEffect(() => {
@@ -141,6 +111,7 @@ const MomentumScanner: React.FC<MomentumScannerProps> = ({ data, onSymbolClick }
         
         const historicalData = await fetchHistoricalData(coin.symbol);
         
+        // Skip if no historical data is available
         if (!historicalData || historicalData.length === 0) {
           console.warn(`No historical data available for ${coin.symbol}`);
           continue;
@@ -169,16 +140,25 @@ const MomentumScanner: React.FC<MomentumScannerProps> = ({ data, onSymbolClick }
           // Calculate metrics
           const priceChange = ((current.close - prev.close) / prev.close) * 100;
           const volumeRatio = current.volumeto / baseVolume;
+          const volumes = historicalData.slice(j).map(d => d.volumeto);
+          const { relativeVolume, spikeFactor } = calculateVolumeMetrics(
+            current.volumeto,
+            prev.volumeto,
+            volumes
+          );
 
           // Check for momentum alerts
-          if (priceChange >= 5 && volumeRatio >= 2) {
+          if ((priceChange >= 5 && volumeRatio >= 2) ||
+              (relativeVolume >= 5 && spikeFactor >= 1.5 && priceChange >= 5)) {
             alerts.push({
               symbol: coin.symbol,
               timestamp: new Date(current.time * 1000),
               price: current.close,
               priceChange,
               volumeRatio,
-              isNewHigh: false
+              isNewHigh: false,
+              relative_volume: relativeVolume,
+              spike_factor: spikeFactor
             });
           }
 
@@ -205,25 +185,14 @@ const MomentumScanner: React.FC<MomentumScannerProps> = ({ data, onSymbolClick }
   return (
     <div className="space-y-4">
       <div className="p-4 flex justify-between items-center">
-        <div className="flex gap-4">
-          <button
-            onClick={runBacktest}
-            disabled={isBacktesting}
-            className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-white disabled:opacity-50"
-          >
-            <History className="w-4 h-4" />
-            {isBacktesting ? `Backtesting... ${backtestProgress}%` : 'Run 24h Backtest'}
-          </button>
-
-          <button
-            onClick={() => setDebugMode(!debugMode)}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-white ${
-              debugMode ? 'bg-purple-600 hover:bg-purple-700' : 'bg-gray-600 hover:bg-gray-700'
-            }`}
-          >
-            {debugMode ? 'Disable Debug Mode' : 'Enable Debug Mode'}
-          </button>
-        </div>
+        <button
+          onClick={runBacktest}
+          disabled={isBacktesting}
+          className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-white disabled:opacity-50"
+        >
+          <History className="w-4 h-4" />
+          {isBacktesting ? `Backtesting... ${backtestProgress}%` : 'Run 24h Backtest'}
+        </button>
 
         <button
           onClick={toggleMute}
