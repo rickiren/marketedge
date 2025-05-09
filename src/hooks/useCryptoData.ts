@@ -26,6 +26,7 @@ export const useCryptoData = (): ApiResponse => {
   const lastAlertRef = useRef<Map<string, number>>(new Map());
   const fetchTimeoutRef = useRef<NodeJS.Timeout>();
   const isSubscribedRef = useRef(false);
+  const isInitialLoadRef = useRef(true);
   
   const dayStartRef = useRef<number>(
     new Date(new Date().toISOString().split('T')[0]).getTime()
@@ -170,7 +171,8 @@ export const useCryptoData = (): ApiResponse => {
       } else {
         initialPrice = dayHighData.initialPrice;
         
-        if (coin.current_price > dayHighData.high_of_day) {
+        // Only check for new highs if not in initial load
+        if (!isInitialLoadRef.current && coin.current_price > dayHighData.high_of_day) {
           high_of_day = coin.current_price;
           const priceIncrease = ((coin.current_price - initialPrice) / initialPrice) * 100;
           
@@ -258,6 +260,9 @@ export const useCryptoData = (): ApiResponse => {
         data: dataWithMomentum
       });
 
+      // After successful data load, set initial load to false
+      isInitialLoadRef.current = false;
+
       // Schedule next update
       fetchTimeoutRef.current = setTimeout(fetchData, REFRESH_INTERVAL);
     } catch (error) {
@@ -277,7 +282,7 @@ export const useCryptoData = (): ApiResponse => {
     if (isSubscribedRef.current) return;
 
     const subscription = supabase
-      .channel('running_up_alerts')
+      .channel('running-up-alerts')
       .on('postgres_changes', {
         event: 'INSERT',
         schema: 'public',
