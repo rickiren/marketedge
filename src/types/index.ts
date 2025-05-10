@@ -17,18 +17,6 @@ export interface CoinData {
   initial_price?: number;
   relative_volume?: number;
   spike_factor?: number;
-  hasNews?: boolean;
-  newsArticles?: NewsArticle[];
-}
-
-export interface NewsArticle {
-  id: string;
-  title: string;
-  body: string;
-  url: string;
-  source: string;
-  published_at: number;
-  categories: string[];
 }
 
 export interface CryptoCompareResponse {

@@ -1,4 +1,4 @@
-import { CoinData, CryptoCompareResponse, HistoricalDataPoint, NewsArticle } from '../types';
+import { CoinData, CryptoCompareResponse, HistoricalDataPoint } from '../types';
 import { COIN_PAIRS } from '../utils/constants';
 import { supabase } from '../lib/supabase';
 import { calculateVolumeMetrics } from '../utils/formatting';
@@ -29,54 +29,6 @@ async function fetchWithRetry(url: string, options: RequestInit, retries = MAX_R
     }
   }
   throw new Error(`Failed to fetch after ${retries} attempts: ${lastError?.message}`);
-}
-
-async function fetchNewsForCoin(symbol: string): Promise<NewsArticle[]> {
-  try {
-    const url = new URL(`${BASE_URL}/data/v2/news/`);
-    url.search = new URLSearchParams({
-      categories: symbol.toLowerCase(),
-      excludeCategories: 'Sponsored',
-      lang: 'EN',
-      sortOrder: 'latest',
-      feeds: 'cryptocompare,cointelegraph,coindesk',
-      extraParams: 'CryptoTopGainers'
-    }).toString();
-
-    const response = await fetchWithRetry(url.toString(), {
-      headers: {
-        'authorization': `Apikey ${CRYPTOCOMPARE_API_KEY}`,
-        'Accept': 'application/json',
-      }
-    });
-
-    const data = await response.json();
-    
-    if (data.Response === 'Error') {
-      throw new Error(data.Message);
-    }
-
-    if (!data.Data || !Array.isArray(data.Data)) {
-      return [];
-    }
-
-    // Filter articles from the last 24 hours
-    const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
-    return data.Data
-      .filter((article: any) => article.published_on * 1000 > oneDayAgo)
-      .map((article: any) => ({
-        id: article.id,
-        title: article.title,
-        body: article.body,
-        url: article.url,
-        source: article.source,
-        published_at: article.published_on,
-        categories: article.categories.split('|')
-      }));
-  } catch (error) {
-    console.error(`Error fetching news for ${symbol}:`, error);
-    return [];
-  }
 }
 
 async function insertRunningUpAlert(coin: CoinData, retries = 3): Promise<void> {
@@ -188,8 +140,6 @@ export const fetchCoinData = async (): Promise<CoinData[]> => {
         }
 
         const coinData = data.RAW[symbol].USD;
-        const newsArticles = await fetchNewsForCoin(symbol);
-        
         const coin = {
           id: symbol.toLowerCase(),
           symbol: symbol,
@@ -200,8 +150,6 @@ export const fetchCoinData = async (): Promise<CoinData[]> => {
           price_change_percentage_24h: coinData.CHANGEPCT24HOUR,
           total_volume: coinData.VOLUME24HOUR,
           market_cap: coinData.MKTCAP,
-          hasNews: newsArticles.length > 0,
-          newsArticles: newsArticles
         };
 
         if (!isValidCoinData(coin)) {
