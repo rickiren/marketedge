@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { ArrowUp, ArrowDown, Search } from 'lucide-react';
+import { ArrowUp, ArrowDown, Search, Newspaper } from 'lucide-react';
 import { CoinData } from '../types';
 import { 
   formatCurrency, 
@@ -9,6 +9,7 @@ import {
   getPriceChangeClass
 } from '../utils/formatting';
 import GrokAnalysisModal from './GrokAnalysisModal';
+import NewsSnippetModal from './NewsSnippetModal';
 
 interface CryptoRowProps {
   coin: CoinData;
@@ -19,6 +20,7 @@ interface CryptoRowProps {
 const CryptoRow: React.FC<CryptoRowProps> = ({ coin, index, onSymbolClick }) => {
   const [highlight, setHighlight] = useState(false);
   const [showAnalysis, setShowAnalysis] = useState(false);
+  const [showNews, setShowNews] = useState(false);
   
   useEffect(() => {
     if (coin.previousPrice && coin.previousPrice !== coin.current_price) {
@@ -51,12 +53,23 @@ const CryptoRow: React.FC<CryptoRowProps> = ({ coin, index, onSymbolClick }) => 
               />
             )}
             <div className="flex flex-col">
-              <button
-                onClick={() => onSymbolClick(coin.symbol)}
-                className="font-medium text-white hover:underline text-left"
-              >
-                {coin.symbol.toUpperCase()}
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => onSymbolClick(coin.symbol)}
+                  className="font-medium text-white hover:underline text-left"
+                >
+                  {coin.symbol.toUpperCase()}
+                </button>
+                {coin.hasNews && (
+                  <button
+                    onClick={() => setShowNews(true)}
+                    className="text-blue-400 hover:text-blue-300 transition-colors"
+                    title="View news articles"
+                  >
+                    <Newspaper className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
               <span className="text-xs text-gray-400">{coin.name}</span>
             </div>
           </div>
@@ -96,6 +109,13 @@ const CryptoRow: React.FC<CryptoRowProps> = ({ coin, index, onSymbolClick }) => 
         onClose={() => setShowAnalysis(false)}
         coin={coin.symbol}
         change={coin.price_change_percentage_24h}
+      />
+
+      <NewsSnippetModal
+        isOpen={showNews}
+        onClose={() => setShowNews(false)}
+        articles={coin.newsArticles || []}
+        symbol={coin.symbol}
       />
     </>
   );
