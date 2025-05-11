@@ -18,14 +18,18 @@ interface Ticker {
 
 const POLYGON_API_KEY = import.meta.env.VITE_POLYGON_API_KEY;
 
-if (!POLYGON_API_KEY) {
-  throw new Error('Polygon.io API key is missing. Please add VITE_POLYGON_API_KEY to your .env file.');
+// Enhanced API key validation
+if (!POLYGON_API_KEY || POLYGON_API_KEY.trim() === '') {
+  throw new Error('Invalid or missing Polygon.io API key. Please add a valid VITE_POLYGON_API_KEY to your .env file.');
 }
 
-// Initialize REST client with global fetch options for better error handling
+// Initialize REST client with improved error handling options
 const rest = restClient(POLYGON_API_KEY, undefined, {
-  trace: true, // Enable request/response tracing for debugging
-  timeout: 10000 // 10 second timeout
+  trace: true,
+  timeout: 15000, // Increased timeout for better reliability
+  headers: {
+    'User-Agent': 'CryptoScanner/1.0' // Add user agent for better request tracking
+  }
 });
 
 // Initialize WebSocket client
@@ -37,7 +41,7 @@ export function usePolygonStream() {
   const previousPrices = useRef<Map<string, number>>(new Map());
   const marketCaps = useRef<Map<string, number>>(new Map());
 
-  // Fetch top 100 tickers by market cap
+  // Enhanced error handling for top tickers fetch
   const fetchTopTickers = async (): Promise<string[]> => {
     try {
       const response = await rest.reference.tickers({
@@ -48,14 +52,31 @@ export function usePolygonStream() {
         active: true
       });
 
-      if (!response.results || !Array.isArray(response.results)) {
-        throw new Error('Invalid API response format');
+      // Enhanced response validation
+      if (!response) {
+        throw new Error('No response received from Polygon API');
       }
 
-      const tickers: Ticker[] = response.results.map((result: any) => ({
-        ticker: result.ticker,
-        marketCap: result.market_cap || 0
-      }));
+      if (!response.results) {
+        throw new Error('Invalid API response: missing results array');
+      }
+
+      if (!Array.isArray(response.results)) {
+        throw new Error('Invalid API response: results is not an array');
+      }
+
+      if (response.results.length === 0) {
+        console.warn('Warning: No tickers returned from API');
+        return []; // Return empty array instead of throwing
+      }
+
+      const tickers: Ticker[] = response.results
+        .filter(result => result && typeof result === 'object')
+        .map((result: any) => ({
+          ticker: result.ticker || '',
+          marketCap: typeof result.market_cap === 'number' ? result.market_cap : 0
+        }))
+        .filter(ticker => ticker.ticker !== ''); // Filter out any invalid tickers
 
       // Store market caps for later use
       tickers.forEach(({ ticker, marketCap }) => {
@@ -63,26 +84,51 @@ export function usePolygonStream() {
       });
 
       return tickers.map(t => t.ticker);
-    } catch (error) {
-      console.error('Error fetching top tickers:', error);
-      throw error;
+    } catch (error: any) {
+      // Enhanced error logging
+      console.error('Error fetching top tickers:', {
+        message: error.message,
+        status: error.status,
+        requestId: error.request_id,
+        response: error.response
+      });
+
+      // Rethrow with more context
+      throw new Error(`Failed to fetch top tickers: ${error.message}`);
     }
   };
 
   useEffect(() => {
     let reconnectTimeout: NodeJS.Timeout;
     let isSubscribed = true;
+    let reconnectAttempts = 0;
+    const MAX_RECONNECT_ATTEMPTS = 5;
+    const INITIAL_RECONNECT_DELAY = 5000;
 
     const connect = async () => {
       try {
+        // Reset connection state
+        setIsConnected(false);
+        
         // Get top 100 tickers first
         const topTickers = await fetchTopTickers();
         
-        if (!isSubscribed) return; // Check if component is still mounted
+        if (!isSubscribed) return;
 
         if (topTickers.length === 0) {
-          throw new Error('No tickers received from API');
+          console.warn('No tickers available, waiting before retry...');
+          if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+            reconnectTimeout = setTimeout(() => {
+              reconnectAttempts++;
+              connect();
+            }, INITIAL_RECONNECT_DELAY * Math.pow(2, reconnectAttempts));
+            return;
+          }
+          throw new Error('Failed to get tickers after maximum retry attempts');
         }
+
+        // Reset reconnect attempts on successful connection
+        reconnectAttempts = 0;
 
         // Set up WebSocket handlers
         cryptoWS.onmessage = (message) => {
@@ -132,13 +178,18 @@ export function usePolygonStream() {
           console.log('Disconnected from Polygon.io WebSocket');
           setIsConnected(false);
           
-          // Clear any existing reconnection timeout
           if (reconnectTimeout) {
             clearTimeout(reconnectTimeout);
           }
           
-          // Attempt to reconnect after 5 seconds
-          reconnectTimeout = setTimeout(connect, 5000);
+          if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+            reconnectTimeout = setTimeout(() => {
+              reconnectAttempts++;
+              connect();
+            }, INITIAL_RECONNECT_DELAY * Math.pow(2, reconnectAttempts));
+          } else {
+            console.error('Maximum reconnection attempts reached');
+          }
         };
 
         cryptoWS.onerror = (error) => {
@@ -147,18 +198,28 @@ export function usePolygonStream() {
           cryptoWS.close();
         };
 
-      } catch (error) {
+      } catch (error: any) {
         if (!isSubscribed) return;
-        console.error('Failed to initialize Polygon.io connection:', error);
+        console.error('Failed to initialize Polygon.io connection:', {
+          message: error.message,
+          status: error.status,
+          requestId: error.request_id
+        });
+        
         setIsConnected(false);
         
-        // Clear any existing reconnection timeout
         if (reconnectTimeout) {
           clearTimeout(reconnectTimeout);
         }
         
-        // Attempt to reconnect after 5 seconds
-        reconnectTimeout = setTimeout(connect, 5000);
+        if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+          reconnectTimeout = setTimeout(() => {
+            reconnectAttempts++;
+            connect();
+          }, INITIAL_RECONNECT_DELAY * Math.pow(2, reconnectAttempts));
+        } else {
+          console.error('Maximum reconnection attempts reached');
+        }
       }
     };
 
