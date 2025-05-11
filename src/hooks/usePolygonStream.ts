@@ -22,8 +22,13 @@ if (!POLYGON_API_KEY) {
   throw new Error('Polygon.io API key is missing. Please add VITE_POLYGON_API_KEY to your .env file.');
 }
 
-// Initialize clients
-const rest = restClient(POLYGON_API_KEY);
+// Initialize REST client with global fetch options for better error handling
+const rest = restClient(POLYGON_API_KEY, undefined, {
+  trace: true, // Enable request/response tracing for debugging
+  timeout: 10000 // 10 second timeout
+});
+
+// Initialize WebSocket client
 const cryptoWS = websocketClient(POLYGON_API_KEY).crypto();
 
 export function usePolygonStream() {
@@ -66,52 +71,64 @@ export function usePolygonStream() {
 
   useEffect(() => {
     let reconnectTimeout: NodeJS.Timeout;
+    let isSubscribed = true;
 
     const connect = async () => {
       try {
         // Get top 100 tickers first
         const topTickers = await fetchTopTickers();
         
+        if (!isSubscribed) return; // Check if component is still mounted
+
         if (topTickers.length === 0) {
           throw new Error('No tickers received from API');
         }
 
         // Set up WebSocket handlers
         cryptoWS.onmessage = (message) => {
-          const [msg] = JSON.parse(message.data);
-          
-          if (msg.ev === 'XA') { // Aggregate event
-            const pair = msg.pair;
-            const previousPrice = previousPrices.current.get(pair) || msg.c;
-            const priceChange = ((msg.c - previousPrice) / previousPrice) * 100;
-            const marketCap = marketCaps.current.get(pair);
+          if (!isSubscribed) return;
+          try {
+            const [msg] = JSON.parse(message.data);
             
-            previousPrices.current.set(pair, msg.c);
+            if (msg.ev === 'XA') { // Aggregate event
+              const pair = msg.pair;
+              const previousPrice = previousPrices.current.get(pair) || msg.c;
+              const priceChange = ((msg.c - previousPrice) / previousPrice) * 100;
+              const marketCap = marketCaps.current.get(pair);
+              
+              previousPrices.current.set(pair, msg.c);
 
-            setData(prevData => {
-              const newData = prevData.filter(item => item.pair !== pair);
-              return [{
-                pair,
-                price: msg.c,
-                priceChange,
-                volume: msg.v,
-                vwap: msg.vw,
-                timestamp: msg.e,
-                marketCap
-              }, ...newData].sort((a, b) => (b.marketCap || 0) - (a.marketCap || 0));
-            });
+              setData(prevData => {
+                const newData = prevData.filter(item => item.pair !== pair);
+                return [{
+                  pair,
+                  price: msg.c,
+                  priceChange,
+                  volume: msg.v,
+                  vwap: msg.vw,
+                  timestamp: msg.e,
+                  marketCap
+                }, ...newData].sort((a, b) => (b.marketCap || 0) - (a.marketCap || 0));
+              });
+            }
+          } catch (error) {
+            console.error('Error processing WebSocket message:', error);
           }
         };
 
         cryptoWS.onopen = () => {
+          if (!isSubscribed) return;
           console.log('Connected to Polygon.io WebSocket');
           setIsConnected(true);
           
           // Subscribe to minute aggregates for top tickers
-          cryptoWS.subscribe(topTickers.map(ticker => `XA.${ticker}`));
+          const subscriptions = topTickers.map(ticker => `XA.${ticker}`);
+          cryptoWS.subscribe(subscriptions);
+          console.log('Subscribed to:', subscriptions);
         };
 
         cryptoWS.onclose = () => {
+          if (!isSubscribed) return;
           console.log('Disconnected from Polygon.io WebSocket');
           setIsConnected(false);
           
@@ -125,11 +142,13 @@ export function usePolygonStream() {
         };
 
         cryptoWS.onerror = (error) => {
+          if (!isSubscribed) return;
           console.error('WebSocket error:', error);
           cryptoWS.close();
         };
 
       } catch (error) {
+        if (!isSubscribed) return;
         console.error('Failed to initialize Polygon.io connection:', error);
         setIsConnected(false);
         
@@ -145,7 +164,9 @@ export function usePolygonStream() {
 
     connect();
 
+    // Cleanup function
     return () => {
+      isSubscribed = false;
       if (reconnectTimeout) {
         clearTimeout(reconnectTimeout);
       }
