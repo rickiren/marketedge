@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { usePolygonStream } from '../hooks/usePolygonStream';
 import { Activity, ArrowUp, ArrowDown } from 'lucide-react';
-import { formatCurrency, formatPercentage } from '../utils/formatting';
+import { formatCurrency, formatPercentage, formatLargeNumber } from '../utils/formatting';
 
 function PolygonPage() {
   const { data, isConnected } = usePolygonStream();
@@ -22,9 +22,9 @@ function PolygonPage() {
               <Activity className="w-6 h-6 text-white" />
             </div>
             <div>
-              <h1 className="text-2xl font-bold text-white">Polygon.io Stream</h1>
+              <h1 className="text-2xl font-bold text-white">Top 100 by Market Cap</h1>
               <p className="text-gray-400 text-sm">
-                Real-time cryptocurrency data via WebSocket
+                Real-time cryptocurrency data via Polygon.io
               </p>
             </div>
           </div>
@@ -52,17 +52,20 @@ function PolygonPage() {
           <table className="w-full divide-y divide-gray-700">
             <thead className="bg-gray-800/50">
               <tr>
+                <th className="py-3 px-4 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">#</th>
                 <th className="py-3 px-4 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">Symbol</th>
                 <th className="py-3 px-4 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">Price</th>
                 <th className="py-3 px-4 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">Change</th>
+                <th className="py-3 px-4 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">Market Cap</th>
                 <th className="py-3 px-4 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">Volume</th>
                 <th className="py-3 px-4 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">VWAP</th>
                 <th className="py-3 px-4 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">Time</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-700 bg-gray-800/20">
-              {data.map((item) => (
+              {data.map((item, index) => (
                 <tr key={item.pair} className="hover:bg-gray-800/50">
+                  <td className="py-4 px-4 text-gray-400">{index + 1}</td>
                   <td className="py-4 px-4 font-medium text-white">{item.pair}</td>
                   <td className="py-4 px-4">{formatCurrency(item.price)}</td>
                   <td className={`py-4 px-4 ${item.priceChange > 0 ? 'text-green-500' : 'text-red-500'}`}>
@@ -75,7 +78,10 @@ function PolygonPage() {
                       {formatPercentage(item.priceChange)}
                     </div>
                   </td>
-                  <td className="py-4 px-4 text-gray-300">{item.volume.toFixed(2)}</td>
+                  <td className="py-4 px-4 text-gray-300">
+                    {item.marketCap ? formatLargeNumber(item.marketCap) : '-'}
+                  </td>
+                  <td className="py-4 px-4 text-gray-300">{formatLargeNumber(item.volume)}</td>
                   <td className="py-4 px-4 text-gray-300">{formatCurrency(item.vwap)}</td>
                   <td className="py-4 px-4 text-gray-400">
                     {new Date(item.timestamp).toLocaleTimeString()}
