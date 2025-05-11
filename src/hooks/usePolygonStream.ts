@@ -22,8 +22,9 @@ if (!POLYGON_API_KEY) {
   throw new Error('Polygon.io API key is missing. Please add VITE_POLYGON_API_KEY to your .env file.');
 }
 
+// Initialize clients
 const rest = restClient(POLYGON_API_KEY);
-const ws = websocketClient(POLYGON_API_KEY);
+const cryptoWS = websocketClient(POLYGON_API_KEY).crypto();
 
 export function usePolygonStream() {
   const [data, setData] = useState<PolygonData[]>([]);
@@ -38,7 +39,8 @@ export function usePolygonStream() {
         market: 'crypto',
         limit: 100,
         sort: 'market_cap',
-        order: 'desc'
+        order: 'desc',
+        active: true
       });
 
       if (!response.results || !Array.isArray(response.results)) {
@@ -63,6 +65,8 @@ export function usePolygonStream() {
   };
 
   useEffect(() => {
+    let reconnectTimeout: NodeJS.Timeout;
+
     const connect = async () => {
       try {
         // Get top 100 tickers first
@@ -72,65 +76,80 @@ export function usePolygonStream() {
           throw new Error('No tickers received from API');
         }
 
-        // Set up WebSocket connection
-        ws.onmessage(message => {
-          if (Array.isArray(message)) {
-            message.forEach(msg => {
-              if (msg.ev === 'XA') { // Aggregate event
-                const pair = msg.pair;
-                const previousPrice = previousPrices.current.get(pair) || msg.c;
-                const priceChange = ((msg.c - previousPrice) / previousPrice) * 100;
-                const marketCap = marketCaps.current.get(pair);
-                
-                previousPrices.current.set(pair, msg.c);
+        // Set up WebSocket handlers
+        cryptoWS.onmessage = (message) => {
+          const [msg] = JSON.parse(message.data);
+          
+          if (msg.ev === 'XA') { // Aggregate event
+            const pair = msg.pair;
+            const previousPrice = previousPrices.current.get(pair) || msg.c;
+            const priceChange = ((msg.c - previousPrice) / previousPrice) * 100;
+            const marketCap = marketCaps.current.get(pair);
+            
+            previousPrices.current.set(pair, msg.c);
 
-                setData(prevData => {
-                  const newData = prevData.filter(item => item.pair !== pair);
-                  return [{
-                    pair,
-                    price: msg.c,
-                    priceChange,
-                    volume: msg.v,
-                    vwap: msg.vw,
-                    timestamp: msg.e,
-                    marketCap
-                  }, ...newData].sort((a, b) => (b.marketCap || 0) - (a.marketCap || 0));
-                });
-              }
+            setData(prevData => {
+              const newData = prevData.filter(item => item.pair !== pair);
+              return [{
+                pair,
+                price: msg.c,
+                priceChange,
+                volume: msg.v,
+                vwap: msg.vw,
+                timestamp: msg.e,
+                marketCap
+              }, ...newData].sort((a, b) => (b.marketCap || 0) - (a.marketCap || 0));
             });
           }
-        });
+        };
 
-        ws.onopen(() => {
+        cryptoWS.onopen = () => {
           console.log('Connected to Polygon.io WebSocket');
           setIsConnected(true);
           
           // Subscribe to minute aggregates for top tickers
-          ws.subscribe(`XA.${topTickers.join(',XA.')}`);
-        });
+          cryptoWS.subscribe(topTickers.map(ticker => `XA.${ticker}`));
+        };
 
-        ws.onclose(() => {
+        cryptoWS.onclose = () => {
           console.log('Disconnected from Polygon.io WebSocket');
           setIsConnected(false);
-          setTimeout(connect, 5000); // Reconnect after 5 seconds
-        });
+          
+          // Clear any existing reconnection timeout
+          if (reconnectTimeout) {
+            clearTimeout(reconnectTimeout);
+          }
+          
+          // Attempt to reconnect after 5 seconds
+          reconnectTimeout = setTimeout(connect, 5000);
+        };
 
-        ws.onerror((error) => {
+        cryptoWS.onerror = (error) => {
           console.error('WebSocket error:', error);
-          ws.close();
-        });
+          cryptoWS.close();
+        };
 
       } catch (error) {
         console.error('Failed to initialize Polygon.io connection:', error);
         setIsConnected(false);
-        setTimeout(connect, 5000); // Retry after 5 seconds
+        
+        // Clear any existing reconnection timeout
+        if (reconnectTimeout) {
+          clearTimeout(reconnectTimeout);
+        }
+        
+        // Attempt to reconnect after 5 seconds
+        reconnectTimeout = setTimeout(connect, 5000);
       }
     };
 
     connect();
 
     return () => {
-      ws.close();
+      if (reconnectTimeout) {
+        clearTimeout(reconnectTimeout);
+      }
+      cryptoWS.close();
     };
   }, []);
 
