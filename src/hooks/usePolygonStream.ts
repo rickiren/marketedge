@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { restClient, websocketClient } from '@polygon.io/client-js';
 
 interface PolygonData {
   pair: string;
@@ -21,39 +22,32 @@ if (!POLYGON_API_KEY) {
   throw new Error('Polygon.io API key is missing. Please add VITE_POLYGON_API_KEY to your .env file.');
 }
 
+const rest = restClient(POLYGON_API_KEY);
+const ws = websocketClient(POLYGON_API_KEY);
+
 export function usePolygonStream() {
   const [data, setData] = useState<PolygonData[]>([]);
   const [isConnected, setIsConnected] = useState(false);
-  const ws = useRef<WebSocket | null>(null);
   const previousPrices = useRef<Map<string, number>>(new Map());
   const marketCaps = useRef<Map<string, number>>(new Map());
 
   // Fetch top 100 tickers by market cap
   const fetchTopTickers = async (): Promise<string[]> => {
     try {
-      const response = await fetch(
-        'https://api.polygon.io/v3/snapshot/locale/global/markets/crypto/tickers?' +
-        new URLSearchParams({
-          limit: '100',
-          sort: 'market_cap',
-          order: 'desc',
-          apiKey: POLYGON_API_KEY
-        })
-      );
+      const response = await rest.reference.tickers({
+        market: 'crypto',
+        limit: 100,
+        sort: 'market_cap',
+        order: 'desc'
+      });
 
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
-      const data = await response.json();
-      
-      if (!data.results || !Array.isArray(data.results)) {
+      if (!response.results || !Array.isArray(response.results)) {
         throw new Error('Invalid API response format');
       }
 
-      const tickers: Ticker[] = data.results.map((result: any) => ({
+      const tickers: Ticker[] = response.results.map((result: any) => ({
         ticker: result.ticker,
-        marketCap: result.market_cap
+        marketCap: result.market_cap || 0
       }));
 
       // Store market caps for later use
@@ -64,7 +58,7 @@ export function usePolygonStream() {
       return tickers.map(t => t.ticker);
     } catch (error) {
       console.error('Error fetching top tickers:', error);
-      throw error; // Re-throw to handle in connect()
+      throw error;
     }
   };
 
@@ -78,28 +72,8 @@ export function usePolygonStream() {
           throw new Error('No tickers received from API');
         }
 
-        const socket = new WebSocket(`wss://socket.polygon.io/crypto`);
-
-        socket.onopen = () => {
-          console.log('Connected to Polygon.io WebSocket');
-          setIsConnected(true);
-          
-          // Authenticate
-          socket.send(JSON.stringify({
-            action: 'auth',
-            params: POLYGON_API_KEY
-          }));
-
-          // Subscribe to minute aggregates for top tickers
-          socket.send(JSON.stringify({
-            action: 'subscribe',
-            params: topTickers.map(ticker => `XA.${ticker}`)
-          }));
-        };
-
-        socket.onmessage = (event) => {
-          const message = JSON.parse(event.data);
-          
+        // Set up WebSocket connection
+        ws.onmessage(message => {
           if (Array.isArray(message)) {
             message.forEach(msg => {
               if (msg.ev === 'XA') { // Aggregate event
@@ -125,20 +99,27 @@ export function usePolygonStream() {
               }
             });
           }
-        };
+        });
 
-        socket.onclose = () => {
+        ws.onopen(() => {
+          console.log('Connected to Polygon.io WebSocket');
+          setIsConnected(true);
+          
+          // Subscribe to minute aggregates for top tickers
+          ws.subscribe(`XA.${topTickers.join(',XA.')}`);
+        });
+
+        ws.onclose(() => {
           console.log('Disconnected from Polygon.io WebSocket');
           setIsConnected(false);
           setTimeout(connect, 5000); // Reconnect after 5 seconds
-        };
+        });
 
-        socket.onerror = (error) => {
+        ws.onerror((error) => {
           console.error('WebSocket error:', error);
-          socket.close();
-        };
+          ws.close();
+        });
 
-        ws.current = socket;
       } catch (error) {
         console.error('Failed to initialize Polygon.io connection:', error);
         setIsConnected(false);
@@ -149,9 +130,7 @@ export function usePolygonStream() {
     connect();
 
     return () => {
-      if (ws.current) {
-        ws.current.close();
-      }
+      ws.close();
     };
   }, []);
 
