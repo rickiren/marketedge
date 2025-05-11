@@ -10,92 +10,141 @@ interface PolygonData {
   timestamp: number;
 }
 
+const INITIAL_RECONNECT_DELAY = 1000;
+const MAX_RECONNECT_DELAY = 30000;
+const CONNECTION_TIMEOUT = 10000;
+
 export function usePolygonStream() {
   const [data, setData] = useState<PolygonData[]>([]);
   const [isConnected, setIsConnected] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const ws = useRef<WebSocket | null>(null);
   const previousPrices = useRef<Map<string, number>>(new Map());
   const reconnectAttempts = useRef(0);
   const maxReconnectAttempts = 5;
+  const connectionTimeoutRef = useRef<number>();
 
   useEffect(() => {
     const connect = () => {
       if (reconnectAttempts.current >= maxReconnectAttempts) {
-        console.error('Max reconnection attempts reached');
+        const errorMsg = 'Max reconnection attempts reached. Please check your internet connection or try again later.';
+        console.error(errorMsg);
+        setError(errorMsg);
         return;
       }
 
-      const pairs = COIN_PAIRS.map(symbol => `X:${symbol}USD`);
-      const apiKey = 'UC7gcfqzz54FjpH_bwpgwPTTxf3tdU4q';
-      const socket = new WebSocket(`wss://delayed.polygon.io/crypto`);
+      // Clear any existing error state when attempting to reconnect
+      setError(null);
 
-      socket.onopen = () => {
-        console.log('Connected to Polygon.io WebSocket');
-        setIsConnected(true);
-        reconnectAttempts.current = 0;
-        
-        // Authenticate
-        socket.send(JSON.stringify({
-          action: 'auth',
-          params: apiKey
-        }));
+      const apiKey = import.meta.env.VITE_POLYGON_API_KEY;
+      if (!apiKey) {
+        const errorMsg = 'Polygon API key is not configured';
+        console.error(errorMsg);
+        setError(errorMsg);
+        return;
+      }
 
-        // Subscribe to crypto aggregates
-        socket.send(JSON.stringify({
-          action: 'subscribe',
-          params: pairs.map(pair => `CA.${pair}`)
-        }));
-      };
+      try {
+        const pairs = COIN_PAIRS.map(symbol => `X:${symbol}USD`);
+        const socket = new WebSocket(`wss://delayed.polygon.io/crypto`);
 
-      socket.onmessage = (event) => {
-        try {
-          const message = JSON.parse(event.data);
-          
-          if (Array.isArray(message)) {
-            message.forEach(msg => {
-              if (msg.ev === 'CA') { // Crypto Aggregate
-                const pair = msg.pair.replace('X:', '').replace('USD', '');
-                const previousPrice = previousPrices.current.get(pair) || msg.c;
-                const priceChange = ((msg.c - previousPrice) / previousPrice) * 100;
-                
-                previousPrices.current.set(pair, msg.c);
-
-                setData(prevData => {
-                  const newData = prevData.filter(item => item.pair !== pair);
-                  return [{
-                    pair,
-                    price: msg.c,
-                    priceChange,
-                    volume: msg.v,
-                    vwap: msg.vw || msg.c,
-                    timestamp: msg.e
-                  }, ...newData].sort((a, b) => Math.abs(b.priceChange) - Math.abs(a.priceChange));
-                });
-              }
-            });
-          } else if (message.ev === 'status') {
-            console.log('Status message:', message);
+        // Set connection timeout
+        connectionTimeoutRef.current = window.setTimeout(() => {
+          if (socket.readyState !== WebSocket.OPEN) {
+            socket.close();
+            const errorMsg = 'Connection timeout - could not connect to Polygon.io';
+            console.error(errorMsg);
+            setError(errorMsg);
           }
-        } catch (error) {
-          console.error('Error processing message:', error);
-        }
-      };
+        }, CONNECTION_TIMEOUT);
 
-      socket.onclose = (event) => {
-        console.log('WebSocket closed:', event.code, event.reason);
-        setIsConnected(false);
-        reconnectAttempts.current++;
-        
-        // Exponential backoff for reconnection
-        const delay = Math.min(1000 * Math.pow(2, reconnectAttempts.current), 30000);
-        setTimeout(connect, delay);
-      };
+        socket.onopen = () => {
+          console.log('Connected to Polygon.io WebSocket');
+          setIsConnected(true);
+          setError(null);
+          reconnectAttempts.current = 0;
+          clearTimeout(connectionTimeoutRef.current);
+          
+          // Authenticate
+          socket.send(JSON.stringify({
+            action: 'auth',
+            params: apiKey
+          }));
 
-      socket.onerror = (error) => {
-        console.error('WebSocket error:', error);
-      };
+          // Subscribe to crypto aggregates
+          socket.send(JSON.stringify({
+            action: 'subscribe',
+            params: pairs.map(pair => `CA.${pair}`)
+          }));
+        };
 
-      ws.current = socket;
+        socket.onmessage = (event) => {
+          try {
+            const message = JSON.parse(event.data);
+            
+            if (Array.isArray(message)) {
+              message.forEach(msg => {
+                if (msg.ev === 'CA') { // Crypto Aggregate
+                  const pair = msg.pair.replace('X:', '').replace('USD', '');
+                  const previousPrice = previousPrices.current.get(pair) || msg.c;
+                  const priceChange = ((msg.c - previousPrice) / previousPrice) * 100;
+                  
+                  previousPrices.current.set(pair, msg.c);
+
+                  setData(prevData => {
+                    const newData = prevData.filter(item => item.pair !== pair);
+                    return [{
+                      pair,
+                      price: msg.c,
+                      priceChange,
+                      volume: msg.v,
+                      vwap: msg.vw || msg.c,
+                      timestamp: msg.e
+                    }, ...newData].sort((a, b) => Math.abs(b.priceChange) - Math.abs(a.priceChange));
+                  });
+                }
+              });
+            } else if (message.ev === 'status') {
+              if (message.status === 'auth_failed') {
+                const errorMsg = 'Authentication failed - invalid API key';
+                console.error(errorMsg);
+                setError(errorMsg);
+                socket.close();
+              } else {
+                console.log('Status message:', message);
+              }
+            }
+          } catch (error) {
+            console.error('Error processing message:', error);
+          }
+        };
+
+        socket.onclose = (event) => {
+          console.log('WebSocket closed:', event.code, event.reason);
+          setIsConnected(false);
+          clearTimeout(connectionTimeoutRef.current);
+          reconnectAttempts.current++;
+          
+          // Exponential backoff for reconnection
+          const delay = Math.min(
+            INITIAL_RECONNECT_DELAY * Math.pow(2, reconnectAttempts.current),
+            MAX_RECONNECT_DELAY
+          );
+          setTimeout(connect, delay);
+        };
+
+        socket.onerror = (error) => {
+          const errorMsg = 'WebSocket connection error. Please check your internet connection.';
+          console.error(errorMsg, error);
+          setError(errorMsg);
+          clearTimeout(connectionTimeoutRef.current);
+        };
+
+        ws.current = socket;
+      } catch (error) {
+        console.error('Error creating WebSocket connection:', error);
+        setError('Failed to create WebSocket connection');
+      }
     };
 
     connect();
@@ -104,8 +153,9 @@ export function usePolygonStream() {
       if (ws.current) {
         ws.current.close();
       }
+      clearTimeout(connectionTimeoutRef.current);
     };
   }, []);
 
-  return { data, isConnected };
+  return { data, isConnected, error };
 }
