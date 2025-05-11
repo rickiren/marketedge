@@ -15,6 +15,12 @@ interface Ticker {
   marketCap: number;
 }
 
+const POLYGON_API_KEY = import.meta.env.VITE_POLYGON_API_KEY;
+
+if (!POLYGON_API_KEY) {
+  throw new Error('Polygon.io API key is missing. Please add VITE_POLYGON_API_KEY to your .env file.');
+}
+
 export function usePolygonStream() {
   const [data, setData] = useState<PolygonData[]>([]);
   const [isConnected, setIsConnected] = useState(false);
@@ -31,15 +37,20 @@ export function usePolygonStream() {
           limit: '100',
           sort: 'market_cap',
           order: 'desc',
-          apiKey: 'UC7gcfqzz54FjpH_bwpgwPTTxf3tdU4q'
+          apiKey: POLYGON_API_KEY
         })
       );
 
       if (!response.ok) {
-        throw new Error('Failed to fetch tickers');
+        throw new Error(`HTTP error! status: ${response.status}`);
       }
 
       const data = await response.json();
+      
+      if (!data.results || !Array.isArray(data.results)) {
+        throw new Error('Invalid API response format');
+      }
+
       const tickers: Ticker[] = data.results.map((result: any) => ({
         ticker: result.ticker,
         marketCap: result.market_cap
@@ -53,78 +64,86 @@ export function usePolygonStream() {
       return tickers.map(t => t.ticker);
     } catch (error) {
       console.error('Error fetching top tickers:', error);
-      return [];
+      throw error; // Re-throw to handle in connect()
     }
   };
 
   useEffect(() => {
     const connect = async () => {
-      // Get top 100 tickers first
-      const topTickers = await fetchTopTickers();
-      if (topTickers.length === 0) return;
-
-      const apiKey = 'UC7gcfqzz54FjpH_bwpgwPTTxf3tdU4q';
-      const socket = new WebSocket(`wss://socket.polygon.io/crypto`);
-
-      socket.onopen = () => {
-        console.log('Connected to Polygon.io WebSocket');
-        setIsConnected(true);
+      try {
+        // Get top 100 tickers first
+        const topTickers = await fetchTopTickers();
         
-        // Authenticate
-        socket.send(JSON.stringify({
-          action: 'auth',
-          params: apiKey
-        }));
-
-        // Subscribe to minute aggregates for top tickers
-        socket.send(JSON.stringify({
-          action: 'subscribe',
-          params: topTickers.map(ticker => `XA.${ticker}`)
-        }));
-      };
-
-      socket.onmessage = (event) => {
-        const message = JSON.parse(event.data);
-        
-        if (Array.isArray(message)) {
-          message.forEach(msg => {
-            if (msg.ev === 'XA') { // Aggregate event
-              const pair = msg.pair;
-              const previousPrice = previousPrices.current.get(pair) || msg.c;
-              const priceChange = ((msg.c - previousPrice) / previousPrice) * 100;
-              const marketCap = marketCaps.current.get(pair);
-              
-              previousPrices.current.set(pair, msg.c);
-
-              setData(prevData => {
-                const newData = prevData.filter(item => item.pair !== pair);
-                return [{
-                  pair,
-                  price: msg.c,
-                  priceChange,
-                  volume: msg.v,
-                  vwap: msg.vw,
-                  timestamp: msg.e,
-                  marketCap
-                }, ...newData].sort((a, b) => (b.marketCap || 0) - (a.marketCap || 0));
-              });
-            }
-          });
+        if (topTickers.length === 0) {
+          throw new Error('No tickers received from API');
         }
-      };
 
-      socket.onclose = () => {
-        console.log('Disconnected from Polygon.io WebSocket');
+        const socket = new WebSocket(`wss://socket.polygon.io/crypto`);
+
+        socket.onopen = () => {
+          console.log('Connected to Polygon.io WebSocket');
+          setIsConnected(true);
+          
+          // Authenticate
+          socket.send(JSON.stringify({
+            action: 'auth',
+            params: POLYGON_API_KEY
+          }));
+
+          // Subscribe to minute aggregates for top tickers
+          socket.send(JSON.stringify({
+            action: 'subscribe',
+            params: topTickers.map(ticker => `XA.${ticker}`)
+          }));
+        };
+
+        socket.onmessage = (event) => {
+          const message = JSON.parse(event.data);
+          
+          if (Array.isArray(message)) {
+            message.forEach(msg => {
+              if (msg.ev === 'XA') { // Aggregate event
+                const pair = msg.pair;
+                const previousPrice = previousPrices.current.get(pair) || msg.c;
+                const priceChange = ((msg.c - previousPrice) / previousPrice) * 100;
+                const marketCap = marketCaps.current.get(pair);
+                
+                previousPrices.current.set(pair, msg.c);
+
+                setData(prevData => {
+                  const newData = prevData.filter(item => item.pair !== pair);
+                  return [{
+                    pair,
+                    price: msg.c,
+                    priceChange,
+                    volume: msg.v,
+                    vwap: msg.vw,
+                    timestamp: msg.e,
+                    marketCap
+                  }, ...newData].sort((a, b) => (b.marketCap || 0) - (a.marketCap || 0));
+                });
+              }
+            });
+          }
+        };
+
+        socket.onclose = () => {
+          console.log('Disconnected from Polygon.io WebSocket');
+          setIsConnected(false);
+          setTimeout(connect, 5000); // Reconnect after 5 seconds
+        };
+
+        socket.onerror = (error) => {
+          console.error('WebSocket error:', error);
+          socket.close();
+        };
+
+        ws.current = socket;
+      } catch (error) {
+        console.error('Failed to initialize Polygon.io connection:', error);
         setIsConnected(false);
-        setTimeout(connect, 5000); // Reconnect after 5 seconds
-      };
-
-      socket.onerror = (error) => {
-        console.error('WebSocket error:', error);
-        socket.close();
-      };
-
-      ws.current = socket;
+        setTimeout(connect, 5000); // Retry after 5 seconds
+      }
     };
 
     connect();
